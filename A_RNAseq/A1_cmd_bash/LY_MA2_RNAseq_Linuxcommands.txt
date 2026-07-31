@@ -1,0 +1,228 @@
+#MA2 RNA-seq analysis Linux commands
+
+7/25/2026
+
+
+########hg38 STAR INDEX generation: a local StarIndex folder was generated with the following commands based on max read length reported by fastqc, then used across analyses. ##########
+### STAR alignment: first step is to create local StarIndex
+wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/GRCh38.primary_assembly.genome.fa.gz
+gzip -d GRCh38.primary_assembly.genome.fa.gz
+
+wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/gencode.v43.primary_assembly.annotation.gtf.gz
+gzip -d gencode.v43.primary_assembly.annotation.gtf.gz
+
+### sbatch starIndexGen.sh:
+#!/bin/bash
+#SBATCH -p short
+#SBATCH -c 12
+#SBATCH -t 3:00:00
+#SBATCH --mem=50G
+#SBATCH -e star_genome.%j.err
+#SBATCH -o star_genome.%j.out
+
+module load gcc/14.2.0 python/3.13.1 star/2.7.11b
+STAR --runThreadN 11 --runMode genomeGenerate --genomeDir StarIndex --genomeFastaFiles GRCh38.primary_assembly.genome.fa --sjdbGTFfile gencode.v43.primary_assembly.annotation.gtf --sjdbOverhang 160
+
+##############################################################
+
+[A1_raw_data_by_group]$ ls */
+FBS10_HCC2429/:
+FBS10-HCC2429-diABZI-1_R1.fastq.gz  FBS10-HCC2429-MA2-2_R1.fastq.gz
+FBS10-HCC2429-diABZI-1_R2.fastq.gz  FBS10-HCC2429-MA2-2_R2.fastq.gz
+FBS10-HCC2429-diABZI-2_R1.fastq.gz  FBS10-HCC2429-mock-1_R1.fastq.gz
+FBS10-HCC2429-diABZI-2_R2.fastq.gz  FBS10-HCC2429-mock-1_R2.fastq.gz
+FBS10-HCC2429-MA2-1_R1.fastq.gz     FBS10-HCC2429-mock-2_R1.fastq.gz
+FBS10-HCC2429-MA2-1_R2.fastq.gz     FBS10-HCC2429-mock-2_R2.fastq.gz
+
+FBS10_MCF7/:
+FBS10-MCF7-diABZI-1_R1.fastq.gz  FBS10-MCF7-MA2-2_R1.fastq.gz
+FBS10-MCF7-diABZI-1_R2.fastq.gz  FBS10-MCF7-MA2-2_R2.fastq.gz
+FBS10-MCF7-diABZI-2_R1.fastq.gz  FBS10-MCF7-mock-1_R1.fastq.gz
+FBS10-MCF7-diABZI-2_R2.fastq.gz  FBS10-MCF7-mock-1_R2.fastq.gz
+FBS10-MCF7-MA2-1_R1.fastq.gz     FBS10-MCF7-mock-2_R1.fastq.gz
+FBS10-MCF7-MA2-1_R2.fastq.gz     FBS10-MCF7-mock-2_R2.fastq.gz
+
+FBS2_MCF7/:
+FBS2-MCF7-DMSO-1_R1.fastq.gz  FBS2-MCF7-MA2-3_R1.fastq.gz
+FBS2-MCF7-DMSO-1_R2.fastq.gz  FBS2-MCF7-MA2-3_R2.fastq.gz
+FBS2-MCF7-DMSO-2_R1.fastq.gz  FBS2-MCF7-MA2-4_R1.fastq.gz
+FBS2-MCF7-DMSO-2_R2.fastq.gz  FBS2-MCF7-MA2-4_R2.fastq.gz
+FBS2-MCF7-DMSO-3_R1.fastq.gz  FBS2-MCF7-pIC-1_R1.fastq.gz
+FBS2-MCF7-DMSO-3_R2.fastq.gz  FBS2-MCF7-pIC-1_R2.fastq.gz
+FBS2-MCF7-DMSO-4_R1.fastq.gz  FBS2-MCF7-pIC-2_R1.fastq.gz
+FBS2-MCF7-DMSO-4_R2.fastq.gz  FBS2-MCF7-pIC-2_R2.fastq.gz
+FBS2-MCF7-MA2-1_R1.fastq.gz   FBS2-MCF7-pIC-3_R1.fastq.gz
+FBS2-MCF7-MA2-1_R2.fastq.gz   FBS2-MCF7-pIC-3_R2.fastq.gz
+FBS2-MCF7-MA2-2_R1.fastq.gz   FBS2-MCF7-pIC-4_R1.fastq.gz
+FBS2-MCF7-MA2-2_R2.fastq.gz   FBS2-MCF7-pIC-4_R2.fastq.gz
+
+################
+
+srun --pty -p interactive -t 0-2:00 -c 8 --mem 32G /bin/bash
+
+#1. Fastqc on untrimmed reads
+module load gcc/14.2.0 python/3.13.1 fastqc/0.12.1
+fastqc -t 8 */*.fastq.gz
+
+module load conda/miniforge3
+conda activate multiqc_env
+multiqc ./ -o ./multiqc_beforeTrim/ -n LY_multiqc_report_rawreadsfastqc
+
+
+[A1_raw_data_by_group]$ mkdir ../A1a_fastqc_beforeTrim
+[A1_raw_data_by_group]$ mv */*fastqc.* ../A1a_fastqc_beforeTrim/
+[A1_raw_data_by_group]$ mv multiqc_beforeTrim/ ../A1a_fastqc_beforeTrim/
+
+#2. Adapter trimming using Trimmomatic
+
+#IMPORTANT: before trimming, copy TruSeq3-PE-2.fa to the current directory
+#adapter trimming
+### trimmomatic.sh:
+#!/bin/bash
+#SBATCH -p short
+#SBATCH -c 4
+#SBATCH -t 1:30:00
+#SBATCH --mem=16G
+#SBATCH -e trim.%j.err
+#SBATCH -o trim.%j.out
+
+module load conda/miniforge3
+module load trimmomatic/0.39
+
+ADAPTER_FA="./TruSeq3-PE-2.fa"
+
+if [[ ! -f "$ADAPTER_FA" ]]; then
+    echo "ERROR: Trimmomatic adapter file not found: $ADAPTER_FA" >&2
+    exit 1
+fi
+
+OUTDIR="../A2_trimmed_paired"
+mkdir -p "$OUTDIR"
+
+sample_path="$1"
+dir=$(dirname "$sample_path")
+sample=$(basename "$sample_path")
+
+java -jar "$TRIMMOMATIC/trimmomatic-0.39.jar" PE -threads 4 -phred33 "${dir}/${sample}_R1.fastq.gz" "${dir}/${sample}_R2.fastq.gz" "${OUTDIR}/output_${sample}_R1_paired.fq.gz" "${OUTDIR}/output_${sample}_R1_unpaired.fq.gz" "${OUTDIR}/output_${sample}_R2_paired.fq.gz" "${OUTDIR}/output_${sample}_R2_unpaired.fq.gz" ILLUMINACLIP:"$ADAPTER_FA":2:30:10 LEADING:3 TRAILING:3 MINLEN:36
+
+
+base=()
+for fq in */*_R1.fastq.gz; do
+    base+=("${fq%_R1.fastq.gz}")
+done
+for fq in "${base[@]}"; do echo "$fq"; done
+for fq in "${base[@]}"; do
+    sbatch trimmomatic.sh "$fq"
+done
+
+mkdir A2_trimmed_paired/unpaired
+mv A2_trimmed_paired/output*_unpaired.fq.gz A2_trimmed_paired/unpaired/
+
+
+#3. fastqc on trimmed reads
+srun --pty -p interactive -t 0-2:00 -c 12 --mem 32G /bin/bash
+module load gcc/14.2.0 python/3.13.1 fastqc/0.12.1
+fastqc -t 12 *.fq.gz
+
+module load conda/miniforge3
+conda activate multiqc_env
+multiqc ./ -o ./multiqc_afterTrim/ -n LY_multiqc_report_trimmedreadsfastqc
+
+mkdir ../A2a_fastqc_afterTrim
+mv *fastqc.* ../A2a_fastqc_afterTrim/
+mv multiqc_afterTrim/ ../A2a_fastqc_afterTrim/
+
+
+#4. STAR alignment
+mkdir ../B1_star_alignment
+cd ../B1_star_alignment
+
+###This file is called o2_star_UniqueIdentical.sh:
+#!/bin/bash
+#SBATCH -p short
+#SBATCH -c 12
+#SBATCH -t 1:00:00
+#SBATCH --mem=40G
+#SBATCH -e star.%j.err
+#SBATCH -o star.%j.out
+module load gcc/14.2.0 python/3.13.1 star/2.7.11b
+STAR --runThreadN 11 --genomeDir ../Z_refGenome_files/StarIndex --readFilesIn ../A2_trimmed_paired/"$1"_R1_paired.fq.gz  ../A2_trimmed_paired/"$1"_R2_paired.fq.gz --readFilesCommand "gunzip -c" --outFileNamePrefix "$1"_star_hg38 --outSAMtype BAM SortedByCoordinate --bamRemoveDuplicatesType UniqueIdentical --outSAMunmapped Within --outSAMattributes NH HI NM MD AS --outReadsUnmapped Fastx
+
+base=()
+for fq in ../A2_trimmed_paired/*R1_paired.fq.gz; do base+=("$(basename $fq _R1_paired.fq.gz)"); done
+for fq in ${base[@]}; do echo $fq; done
+for fq in ${base[@]}; do sbatch o2_star_UniqueIdentical.sh $fq; done
+
+mkdir star_err_out
+mv star.*err star.*out star_err_out
+
+mkdir ../B2_sorted_bam_aligned
+cp *hg38Aligned.sortedByCoord.out.bam ../B2_sorted_bam_aligned/
+
+
+#5. running the featureCounts (bioconda::subread) command line version
+module load conda/miniforge3
+conda activate subread_env
+
+#move to data folder and create directory  C1_featureCounts_cmd/
+featureCounts   -a ../Z_refGenome_files/gencode.v43.primary_assembly.annotation.gtf  -T 8  -p --countReadPairs  -s 2   -t exon   -g gene_id  -o LY_HCC2429_counts.txt ../B2_sorted_bam_aligned/output_FBS10-HCC2429*.bam &> LY_HCC2429_fccmdLog.txt
+#This discards multimappers (default behavior on command line featureCounts when -M flag is absent) and runs in pair-end mode (countReadPairs), stranded (-s 2 = reverse strand)
+
+featureCounts   -a ../Z_refGenome_files/gencode.v43.primary_assembly.annotation.gtf  -T 8  -p --countReadPairs  -s 2   -t exon   -g gene_id  -o LY_FBS10_MCF7_counts.txt ../B2_sorted_bam_aligned/output_FBS10-MCF7*.bam &> LY_FBS10_MCF7_fccmdLog.txt
+
+featureCounts   -a ../Z_refGenome_files/gencode.v43.primary_assembly.annotation.gtf  -T 8  -p --countReadPairs  -s 2   -t exon   -g gene_id  -o LY_FBS2_MCF7_counts.txt ../B2_sorted_bam_aligned/output_FBS2-MCF7*.bam &> LY_FBS2_MCF7_fccmdLog.txt
+
+#Split the featureCounts matrix into individual columns for each sample for GEO upload purposes
+mkdir ../C1a_per_sample_fc
+
+### countsplit.sh:
+#!/bin/bash
+input_file="$1"
+awk -F'\t' 'BEGIN {OFS = "\t"}
+NR == 1 {
+    next
+}
+NR == 2 {
+    for (col = 7; col <= NF; col++) {
+        # Strip quotes from the header string
+        header = $col
+        gsub(/"/, "", header)
+        split(header, path_parts, "/")
+        stripped_header = path_parts[3]
+        split(stripped_header, name_parts, "_")
+        sample_name = name_parts[2]
+
+        # replacing "output" with the sample name
+        out_filename = "output_gene_counts.txt"
+        gsub(/output/, sample_name, out_filename)
+        output_file[col] = out_filename
+
+        print "Geneid", "Chr", "Start", "End", "Strand", "Length", "Count" > output_file[col]
+    }
+    next
+}
+{
+    for (col = 7; col <= NF; col++) {
+        print $1, $2, $3, $4, $5, $6, $col > output_file[col]
+    }
+}
+' "$input_file"
+
+#Sample usage: . countsplit.sh test_LY_fcHCC2429counts.txt
+
+. countsplit.sh ../C1_featureCounts_cmd/LY_HCC2429_counts.txt
+. countsplit.sh ../C1_featureCounts_cmd/LY_FBS10_MCF7_counts.txt
+. countsplit.sh ../C1_featureCounts_cmd/LY_FBS2_MCF7_counts.txt
+
+
+#6. Perform downstream analyses (DESeq2, etc) in R and python
+mkdir D1_DESeq2_R
+
+#Appendix: versions of the softwares used (if not already specified within module load commands above)
+#multiqc: 
+## Name                    Version                   Build  Channel
+#multiqc                   1.31               pyhdfd78af_0    bioconda
+
+#subread (featureCounts): 
+## Name                    Version                   Build  Channel
+#subread                   2.1.1                h577a1d6_0    bioconda
